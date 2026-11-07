@@ -7,10 +7,61 @@ const { sendInvoiceEmail } = require("../services/emailService");
 
 const router = express.Router();
 
+// Prevent duplicate background email attempts in this process.
+const invoicesBeingSent = new Set();
+
+// Send invoice email without delaying payment confirmation.
+async function sendInvoiceInBackground(invoice) {
+  if (!invoice || invoicesBeingSent.has(invoice.id)) {
+    return;
+  }
+
+  invoicesBeingSent.add(invoice.id);
+
+  try {
+    const pdfBuffer = await generateInvoicePdf(invoice);
+
+    await sendInvoiceEmail(invoice, pdfBuffer);
+
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        emailStatus: "Sent",
+        emailSentAt: new Date(),
+        emailError: null
+      }
+    });
+
+    console.log(
+      `Invoice ${invoice.invoiceNumber} emailed successfully.`
+    );
+  } catch (emailError) {
+    console.error("Invoice email failed:", emailError.message);
+
+    try {
+      await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          emailStatus: "Failed",
+          emailError: emailError.message
+        }
+      });
+    } catch (dbError) {
+      console.error(
+        "Could not update invoice email status:",
+        dbError.message
+      );
+    }
+  } finally {
+    invoicesBeingSent.delete(invoice.id);
+  }
+}
+
 router.get("/verify/:orderId", async (req, res, next) => {
   try {
     const { orderId } = req.params;
 
+    // Find the payment and associated lead.
     const payment = await prisma.payment.findUnique({
       where: { cashfreeOrderId: orderId },
       include: { lead: true }
@@ -22,10 +73,11 @@ router.get("/verify/:orderId", async (req, res, next) => {
       });
     }
 
-    // Fetch order from Cashfree.
+    // Fetch order details from Cashfree.
     const orderResponse = await cashfree.PGFetchOrder(orderId);
     const cashfreeOrder = orderResponse.data;
 
+    // Validate order amount and currency.
     if (
       Number(cashfreeOrder.order_amount) !== Number(payment.amount) ||
       cashfreeOrder.order_currency !== payment.currency
@@ -35,6 +87,7 @@ router.get("/verify/:orderId", async (req, res, next) => {
       });
     }
 
+    // Payment must be PAID.
     if (cashfreeOrder.order_status !== "PAID") {
       return res.json({
         message: "Payment is not successful yet.",
@@ -57,6 +110,7 @@ router.get("/verify/:orderId", async (req, res, next) => {
       });
     }
 
+    // Validate actual paid amount.
     if (
       Number(successfulPayment.payment_amount) !==
       Number(payment.amount)
@@ -80,12 +134,13 @@ router.get("/verify/:orderId", async (req, res, next) => {
         });
 
         return {
-            order: existingOrder,
-            invoice: existingOrder?.invoice,
-            alreadyProcessed: true
+          order: existingOrder,
+          invoice: existingOrder?.invoice,
+          alreadyProcessed: true
         };
       }
 
+      // Mark payment successful.
       const updatedPayment = await tx.payment.update({
         where: { id: payment.id },
         data: {
@@ -99,6 +154,7 @@ router.get("/verify/:orderId", async (req, res, next) => {
         }
       });
 
+      // Create confirmed order.
       const order = await tx.order.create({
         data: {
           leadId: payment.leadId,
@@ -114,6 +170,7 @@ router.get("/verify/:orderId", async (req, res, next) => {
       const invoiceNumber =
         `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+      // Create invoice.
       const invoice = await tx.invoice.create({
         data: {
           invoiceNumber,
@@ -132,6 +189,7 @@ router.get("/verify/:orderId", async (req, res, next) => {
         }
       });
 
+      // Convert lead after successful payment.
       await tx.lead.update({
         where: { id: payment.leadId },
         data: { status: "Converted" }
@@ -144,58 +202,26 @@ router.get("/verify/:orderId", async (req, res, next) => {
       };
     });
 
-        // Send invoice email after successful payment.
-    let emailStatus = result.invoice?.emailStatus || "Pending";
-
-    if (
-      result.invoice &&
-      emailStatus !== "Sent"
-    ) {
-      try {
-        const pdfBuffer = await generateInvoicePdf(result.invoice);
-
-        await sendInvoiceEmail(result.invoice, pdfBuffer);
-
-        await prisma.invoice.update({
-          where: { id: result.invoice.id },
-          data: {
-            emailStatus: "Sent",
-            emailSentAt: new Date(),
-            emailError: null
-          }
-        });
-
-        emailStatus = "Sent";
-
-        console.log(
-          `Invoice ${result.invoice.invoiceNumber} emailed successfully.`
-        );
-      } catch (emailError) {
-        console.error("Invoice email failed:", emailError.message);
-
-        await prisma.invoice.update({
-          where: { id: result.invoice.id },
-          data: {
-            emailStatus: "Failed",
-            emailError: emailError.message
-          }
-        });
-
-        emailStatus = "Failed";
-      }
-    }
-
-    return res.json({
+    // Return the success response without waiting for email.
+    res.json({
       message: result.alreadyProcessed
         ? "Payment was already processed."
         : "Payment verified and order created successfully.",
       paymentStatus: "Successful",
-      emailStatus,
+      emailStatus: result.invoice?.emailStatus || "Pending",
       orderId,
       leadId: payment.leadId,
       databaseOrderId: result.order?.id,
-      invoiceId: result.order?.invoice?.id || result.invoice?.id
+      invoiceId: result.invoice?.id
     });
+
+    // Start email delivery in the background.
+    if (
+      result.invoice &&
+      result.invoice.emailStatus !== "Sent"
+    ) {
+      void sendInvoiceInBackground(result.invoice);
+    }
 
   } catch (error) {
     next(error);
