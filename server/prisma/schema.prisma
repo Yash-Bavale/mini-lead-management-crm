@@ -7,12 +7,31 @@ datasource db {
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
+
 enum LeadStatus {
   New
   Contacted
   Interested
   Converted
   NotInterested
+}
+
+enum PaymentStatus {
+  Pending
+  Successful
+  Failed
+  Cancelled
+}
+
+enum OrderStatus {
+  Confirmed
+  Cancelled
+}
+
+enum InvoiceEmailStatus {
+  Pending
+  Sent
+  Failed
 }
 
 model Admin {
@@ -23,19 +42,89 @@ model Admin {
 }
 
 model Lead {
-  id             String     @id @default(cuid())
-  customerName   String
-  mobile         String
-  email          String
-  service        String
-  message        String?
-  status         LeadStatus @default(New)
+  id              String     @id @default(cuid())
+  customerName    String
+  mobile          String
+  email           String
+  service         String
+  message         String?
+  status          LeadStatus @default(New)
   internalRemarks String?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  payments Payment[]
+  orders   Order[]
 
   @@index([customerName])
   @@index([mobile])
   @@index([service, status])
   @@index([createdAt])
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  leadId            String
+  cashfreeOrderId   String        @unique
+  cashfreePaymentId String?       @unique
+  amount            Decimal       @db.Decimal(10, 2)
+  currency          String        @default("INR")
+  status            PaymentStatus @default(Pending)
+  paymentDate       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  lead    Lead     @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  order   Order?
+  invoice Invoice?
+
+  @@index([leadId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  leadId    String
+  paymentId String      @unique
+  service   String
+  amount    Decimal     @db.Decimal(10, 2)
+  currency  String      @default("INR")
+  status    OrderStatus @default(Confirmed)
+  createdAt DateTime    @default(now())
+
+  lead    Lead     @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  payment Payment  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  invoice Invoice?
+
+  @@index([leadId])
+  @@index([createdAt])
+}
+
+model Invoice {
+  id             String             @id @default(cuid())
+  invoiceNumber  String             @unique
+  orderId        String             @unique
+  paymentId      String             @unique
+  invoiceDate    DateTime           @default(now())
+  customerName   String
+  customerEmail  String
+  customerMobile String
+  service        String
+  quantity       Int                @default(1)
+  unitPrice      Decimal            @db.Decimal(10, 2)
+  totalAmount    Decimal            @db.Decimal(10, 2)
+  currency       String             @default("INR")
+  taxAmount      Decimal            @default(0) @db.Decimal(10, 2)
+  pdfUrl         String?
+  emailStatus    InvoiceEmailStatus @default(Pending)
+  emailSentAt    DateTime?
+  emailError     String?
+  createdAt      DateTime           @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceDate])
+  @@index([emailStatus])
 }

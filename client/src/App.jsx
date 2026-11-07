@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
-import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useNavigate,
+  useSearchParams
+} from "react-router-dom";
 import { api } from "./api";
+import { load } from "@cashfreepayments/cashfree-js";
 
 const services = ["Product A", "Product B", "Product C", "Other"];
 const statuses = ["New", "Contacted", "Interested", "Converted", "Not Interested"];
@@ -30,16 +38,48 @@ function PublicHome() {
     return Object.keys(next).length === 0;
   }
   async function submit(e) {
-    e.preventDefault(); setNotice({ type: "", text: "" });
-    if (!validate() || busy) return;
-    setBusy(true);
-    try {
-      const result = await api("/api/leads", { method: "POST", body: JSON.stringify(form) });
-      setNotice({ type: "success", text: result.message });
-      setForm(blankForm); setErrors({});
-    } catch (err) { setNotice({ type: "error", text: err.message }); }
-    finally { setBusy(false); }
+  e.preventDefault();
+  setNotice({ type: "", text: "" });
+
+  if (!validate() || busy) return;
+
+  setBusy(true);
+
+  try {
+    // Submit enquiry and create Cashfree order.
+    const result = await api("/api/leads", {
+      method: "POST",
+      body: JSON.stringify(form)
+    });
+
+    if (!result.paymentSessionId) {
+      throw new Error("Payment session was not generated.");
+    }
+
+    // Initialize Cashfree Sandbox checkout.
+    const cashfree = await load({
+      mode: "sandbox"
+    });
+
+    if (!cashfree) {
+      throw new Error("Unable to load Cashfree checkout.");
+    }
+
+    // Open payment checkout.
+    await cashfree.checkout({
+      paymentSessionId: result.paymentSessionId,
+      redirectTarget: "_self"
+    });
+
+  } catch (err) {
+    setNotice({
+      type: "error",
+      text: err.message || "Unable to initiate payment."
+    });
+  } finally {
+    setBusy(false);
   }
+}
   return <><Header /><main>
     <section className="hero"><div className="hero-copy"><p className="eyebrow">LET'S BUILD SOMETHING BETTER</p>
       <h1>Good things start with a <em>conversation.</em></h1>
@@ -174,12 +214,135 @@ function Detail({ label, value }) {
     </div>
   );
 }
+function PaymentStatus() {
+  const [searchParams] = useSearchParams();
+  const orderId = searchParams.get("order_id");
 
+  const [status, setStatus] = useState("checking");
+  const [message, setMessage] = useState("Verifying your payment...");
+  const [details, setDetails] = useState(null);
+
+  async function verifyPayment() {
+    if (!orderId) {
+      setStatus("error");
+      setMessage("Order ID is missing.");
+      return;
+    }
+
+    setStatus("checking");
+    setMessage("Verifying your payment...");
+
+    try {
+      const result = await api(
+        `/api/payments/verify/${encodeURIComponent(orderId)}`
+      );
+
+      if (
+      result.status === "Successful" ||
+      result.paymentStatus === "Successful"
+      ) {
+        setStatus("success");
+        setMessage("Your payment has been received and your order is confirmed.");
+        setDetails(result);
+      } else {
+        setStatus("pending");
+        setMessage("Your payment is not confirmed yet. Please try again.");
+      }
+    } catch (error) {
+      setStatus("error");
+      setMessage(error.message || "Unable to verify payment.");
+    }
+  }
+
+  useEffect(() => {
+    verifyPayment();
+  }, [orderId]);
+
+  return (
+    <>
+      <Header />
+
+      <main className="login-wrap">
+        <section className="login-card" style={{ textAlign: "center" }}>
+
+          {status === "checking" && (
+            <>
+              <h1>Verifying payment...</h1>
+              <p className="muted">{message}</p>
+            </>
+          )}
+
+          {status === "success" && (
+            <>
+              <div style={{ fontSize: "64px", color: "#16a34a" }}>
+                ✓
+              </div>
+
+              <p className="eyebrow">PAYMENT CONFIRMED</p>
+              <h1>Thank you!</h1>
+
+              <p className="muted">{message}</p>
+
+              <div style={{
+                background: "#f0fdf4",
+                padding: "20px",
+                borderRadius: "12px",
+                margin: "24px 0",
+                textAlign: "left"
+              }}>
+                <p><strong>Order ID:</strong></p>
+                <p>{details?.orderId}</p>
+
+                <p><strong>Order status:</strong></p>
+                <p>Confirmed</p>
+
+                <p><strong>Invoice ID:</strong></p>
+                <p>{details?.invoiceId}</p>
+              </div>
+
+              <p className="muted">
+                Your order has been received successfully.
+                Thank you for choosing Northstar!
+              </p>
+
+              <Link className="primary-button full" to="/">
+                Back to Home
+              </Link>
+            </>
+          )}
+
+          {status === "pending" && (
+            <>
+              <h1>Payment Pending</h1>
+              <p className="muted">{message}</p>
+              <button className="primary-button full" onClick={verifyPayment}>
+                Check Payment Again
+              </button>
+            </>
+          )}
+
+          {status === "error" && (
+            <>
+              <h1>Unable to Confirm Payment</h1>
+              <p className="muted">{message}</p>
+
+              <button className="primary-button full" onClick={verifyPayment}>
+                Retry Verification
+              </button>
+            </>
+          )}
+
+        </section>
+      </main>
+    </>
+  );
+}
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<PublicHome />} />
       <Route path="/admin/login" element={<Login />} />
+      <Route path="/payment-status" element={<PaymentStatus />} />
       <Route
         path="/admin"
         element={

@@ -5,7 +5,9 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const authRoutes = require("./routes/auth");
 const leadRoutes = require("./routes/leads");
+const invoiceRoutes = require("./routes/invoices");
 const prisma = require("./db");
+const paymentRoutes = require("./routes/payments");
 
 if (!process.env.DATABASE_URL || !process.env.JWT_SECRET) {
   throw new Error("DATABASE_URL and JWT_SECRET must be configured.");
@@ -20,6 +22,8 @@ app.use("/api", rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeader
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 app.use("/api/auth", authRoutes);
 app.use("/api/leads", leadRoutes);
+app.use("/api/invoices", invoiceRoutes);
+app.use("/api/payments", paymentRoutes);
 
 app.use((req, res) => res.status(404).json({ error: "Route not found." }));
 app.use((error, req, res, next) => {
