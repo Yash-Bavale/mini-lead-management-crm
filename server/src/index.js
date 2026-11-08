@@ -6,6 +6,7 @@ const rateLimit = require("express-rate-limit");
 const authRoutes = require("./routes/auth");
 const leadRoutes = require("./routes/leads");
 const invoiceRoutes = require("./routes/invoices");
+const orderRoutes = require("./routes/orders");
 const prisma = require("./db");
 const paymentRoutes = require("./routes/payments");
 
@@ -25,6 +26,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/leads", leadRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/orders", orderRoutes);
 
 app.use((req, res) => res.status(404).json({ error: "Route not found." }));
 app.use((error, req, res, next) => {
